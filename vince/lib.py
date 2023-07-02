@@ -1317,6 +1317,7 @@ def update_vendor_status(attributes, body):
                             comment=comment)
 
         followup.save()
+        logger.debug("updated vendor status")
 
         
 
@@ -1356,6 +1357,7 @@ def create_case_msg_action(case, user, title, msg):
 
             
 def create_case_post_action(attributes, body):
+    logger.debug("vendor posted in vc")
     msgtype = attributes['MessageType']
     title = body
     submitter = attributes['User']
@@ -1856,14 +1858,12 @@ def create_bounce_record(email_to, bounce_type, subject, ticket=None):
                 
 
 def create_bounce_ticket(headers, bounce_info):
-    subject = headers.get("subject")
-    #email_to = headers.get("to")
+    subject = headers.get("subject", "Bounced Email")
     email_to = bounce_info.get("bouncedRecipients")
     email_to_str = ", ".join(email_to)
     email_from = headers.get("from")
     email_from_str = ", ".join(email_from)
     bounce_type = bounce_info.get('bounceType')
-    date = headers.get("date")
 
     dead_users = []
     for email in email_to:

@@ -168,128 +168,122 @@ def generate_reminders(request):
 @csrf_exempt
 def ingest_vulreport(request):
     logger.debug("Received request")
-    logger.debug(f"Request method is: {request.method}")
+    logger.debug("Request method is: %s", request.method)
 
-    if request.method == 'POST':
-        try:
-            message = request.body.decode('utf-8')
-            attributes = {}
-            body_data = json.loads(message)
-            logger.debug(body_data)
-            if body_data.get('MessageAttributes'):
-                if body_data['MessageAttributes'].get('MessageType'):
-                    attributes['MessageType'] = body_data['MessageAttributes'].get('MessageType').get('Value')
-                    if body_data['MessageAttributes'].get('Case'):
-                        attributes['Case'] = body_data['MessageAttributes'].get('Case').get('Value')
-                    if body_data['MessageAttributes'].get('Queue'):
-                        attributes['Queue'] = body_data['MessageAttributes'].get('Queue').get('Value')
-                    if body_data['MessageAttributes'].get('Table'):
-                        attributes['Table'] = body_data['MessageAttributes'].get('Table').get('Value')
-                    if body_data['MessageAttributes'].get('User'):
-                        attributes['User'] = body_data['MessageAttributes'].get('User').get('Value')
-                    if body_data['MessageAttributes'].get('Group'):
-                        attributes['Group'] = body_data['MessageAttributes'].get('Group').get('Value')
-                    if body_data['MessageAttributes'].get('ReportType'):
-                        attributes['ReportType'] = body_data['MessageAttributes'].get('ReportType').get('Value')
-                    if body_data['MessageAttributes'].get('Message'):
-                        attributes['Message'] = body_data['MessageAttributes'].get('Message').get('Value')
-            govqueue = TicketQueue.objects.filter(title="GOV").first()
-            vulqueue = TicketQueue.objects.filter(title="CR").first()
-            
-        except Exception:
-            logger.debug(f"Message is not valid json")
-            error_msg = "%s" % (traceback.format_exc())
-            logger.debug(error_msg)
-            #send_sns('vinceworker', 'issue with json load of HTTP POST', error_msg)
-            return HttpResponse(status=404)
+    if request.method != "POST":
+        return HttpResponse("Request: %s", request)
 
-        if attributes.get('MessageType'):
-            #this is a message
-            message = body_data.get('Message')
-            if attributes['MessageType'] == "UpdateSrmail":
-                return write_srmail(request)
-            if attributes['MessageType'] == "UpdateStatus":
-                update_vendor_status(attributes, message)
-                logger.debug("updated vendor status")
-            elif attributes['MessageType'] == 'VendorLogin':
-                update_vendor_view_status(attributes, message)
-            elif attributes['MessageType'] in ['NewTicket', 'MessageReply']:
-                create_ticket(attributes, message)
-            elif attributes['MessageType'] in ['NewPost', 'EditPost', 'PostRemoved']:
-                logger.debug("vendor posted in vc")
-                create_case_post_action(attributes, message)
-            elif attributes['MessageType'] == 'EditContact':
-                create_action(attributes, message)
-            elif attributes['MessageType'] == 'NewFile':
-                add_case_artifact(attributes, message)
-            elif attributes['MessageType'] == 'CRUpdate':
-                update_case_request(attributes, message)
-            elif attributes['MessageType'] == 'ResetMFA':
-                reset_user_mfa(attributes, message)
-            elif attributes['MessageType'] == 'PostNotify':
-                post = body_data['MessageAttributes'].get('Post').get('Value')
-                instance = get_object_or_404(PostRevision, id=int(post))
-                emails = send_usermention_notification(instance.post, instance.content)
-                send_post_email(instance.post, emails)
-            elif attributes['MessageType'] == 'NotifyVendor':
-                notification = get_object_or_404(VendorNotification, id=int(attributes['Group']))
-                send_vendor_email_notification([notification.vendor.contact.id], notification.vendor.case, notification.notification.subject, notification.notification.email_body)
-            elif attributes['MessageType'] == 'EmailAll':
-                content = body_data['MessageAttributes'].get('Message').get('Value')
-                subject = body_data['MessageAttributes'].get('Subject').get('Value')
-                to_group = body_data['MessageAttributes'].get('To_group').get('Value')
-                from_user = body_data['MessageAttributes'].get('From_User').get('Value')
-                ticket = body_data['MessageAttributes'].get('Ticket').get('Value')
-                from_user = get_object_or_404(User, email=from_user)
-                send_email_to_all(to_group, subject, content, from_user, ticket)
-                
-            return JsonResponse({'response':'success'}, status=200)
-                
-        try:
-            data = json.loads(body_data['Message'])
-            logger.debug(data)
-            if "notificationType" in data:
-                #this is a bounce or a complaint
-                if data['notificationType'] in ["Bounce", "Complaint"]:
-                    mail = data.get("mail")
-                    if mail:
-                        headers = mail.get("commonHeaders")
-                        if headers:
-                            create_bounce_ticket(headers, data.get("bounce"))
-                            return JsonResponse({'response':'success'}, status=200)
-                    send_sns("email bounce", "Bounce notification received, but unexpected format", json.dumps(data))
-                    return JsonResponse({'response':'success'}, status=200)
-            
-            if "receipt" in data:
-                if data['receipt'].get('action'):
-                    if data["receipt"]["action"].get("type") == "S3":
-                        # this is an email notification
-                        #if data["receipt"]["action"].get("bucketName") == settings.EMAIL_BUCKET:
-                        email_msg = create_ticket_from_email_s3(data["receipt"]["action"].get("objectKey"), data["receipt"]["action"].get("bucketName"))
-                        return JsonResponse({'response':'success'}, status=200)
-            data['submission_type'] = 'web'
-            data['queue'] = vulqueue.id
-            cr = CaseRequestSerializer(data=data)
-            if (cr.is_valid()):
-                cr = cr.save()
-                if cr.request_type == CaseRequest.VRF_FORM:
-                    if data.get('vc_id'):
-                        cr.vc_id = data.get('vc_id')
-                        cr.save()
-                if cr.contact_email:
-                    cr.submitter_email = cr.contact_email
-                    cr.save()
+    try:
+        logger.debug(body_data := json.loads(request.body.decode("utf-8")))
+    except (json.JSONDecodeError, UnicodeError):
+        logger.debug("Message is not valid json")
+        logger.debug("%s", traceback.format_exc())
+        return HttpResponse(status=404)
 
-                vince_retrieve_submission(cr, data['vrf_id'], data.get('s3_file_name'))
-                return JsonResponse({'response':'success'}, status=200)
-            else:
-                logger.debug(cr.errors)
-            
-        except:
-            logger.debug(traceback.format_exc())
-            
-    return HttpResponse(f"Request: {request}")
+    def T(x): return {k: v["Value"] for k, v in x.items()}
 
+    match body_data:
+        case {"Message": _, "MessageAttributes": {"MessageType": {"Value": "UpdateSrmail"}}}:
+            write_srmail()
+
+
+        case {"Message": message, "MessageAttributes": {"MessageType": {"Value": "UpdateStatus"}, **message_attributes}}:
+            update_vendor_status(T(message_attributes), message)
+
+
+        case {"Message": message, "MessageAttributes": {"MessageType": {"Value": "VendorLogin"}, **message_attributes}}:
+            update_vendor_view_status(T(message_attributes), message)
+
+
+        case {"Message": message, "MessageAttributes": {"MessageType": {"Value": ("NewTicket" | "MessageReply")}, **message_attributes}}:
+            create_ticket(T(message_attributes), message)
+
+
+        case {"Message": message, "MessageAttributes": {"MessageType": {"Value": ("NewPost" | "EditPost" | "PostRemoved")}, **message_attributes}}:
+            create_case_post_action(T(message_attributes), message)
+
+
+        case {"Message": message, "MessageAttributes": {"MessageType": {"Value": "EditContact"}, **message_attributes}}:
+            create_action(T(message_attributes), message)
+
+
+        case {"Message": message, "MessageAttributes": {"MessageType": {"Value": "NewFile"}, **message_attributes}}:
+            add_case_artifact(T(message_attributes), message)
+
+
+        case {"Message": message, "MessageAttributes": {"MessageType": {"Value": "CRUpdate"}, **message_attributes}}:
+            update_case_request(T(message_attributes), message)
+
+
+        case {"Message": message, "MessageAttributes": {"MessageType": {"Value": "ResetMFA"}, **message_attributes}}:
+            reset_user_mfa(T(message_attributes), message)
+
+
+        case {"Message": message, "MessageAttributes": {"MessageType": {"Value": "PostNotify"}, "Post": {"Value": post}}}:
+            instance = get_object_or_404(PostRevision, id=int(post))
+            emails = send_usermention_notification(instance.post, instance.content)
+            send_post_email(instance.post, emails)
+
+
+        case {"Message": message, "MessageAttributes": {"MessageType": {"Value": "NotifyVendor"}, "Group": {"Value": group}}}:
+            notification = get_object_or_404(VendorNotification, id=int(group))
+            send_vendor_email_notification([notification.vendor.contact.id], notification.vendor.case, notification.notification.subject, notification.notification.email_body,)
+
+
+        case {"Message": message, "MessageAttributes": {"MessageType": {"Value": "EmailAll"}, **message_attributes}}:
+            attributes = T(message_attributes)
+            from_user = get_object_or_404(User, email=attributes["From_User"])
+            send_email_to_all(
+                attributes["To_group"],
+                attributes["Subject"],
+                attributes["Message"],
+                from_user,
+                attributes["Ticket"],
+            )
+
+
+        case {"Message": message}:
+            data = json.loads(message)
+            match data:
+                case {
+                        "notificationType": ("Bounce" | "Complaint"),
+                        "mail": {"commonHeaders": {"from": [*froms], **headers} as common_headers},
+                        "bounce": {"bouncedRecipients": [*bounced_recipients], "bounceType": bounce_type} as bounce
+                    }:
+                    create_bounce_ticket(common_headers, bounce)
+
+
+                case {"notificationType": ("Bounce" | "Complaint")}:
+                    send_sns("email bounce", "Bounce notification received, but unexpected format", message)
+
+
+                case {"receipt": {"action": {"objectKey": object_key, "bucketName": bucket_name, "type": "S3"}}}:
+                    create_ticket_from_email_s3(object_key, bucket_name)
+
+
+                case _:
+                    vulqueue = TicketQueue.objects.filter(title="CR").first()
+                    cr = CaseRequestSerializer(
+                        data=data | {"submission_type": "web", "queue": vulqueue.id}
+                    )
+                    if cr.is_valid():
+                        cr = cr.save()
+                        if cr.request_type == CaseRequest.VRF_FORM:
+                            if data.get("vc_id"):
+                                cr.vc_id = data.get("vc_id")
+                                cr.save()
+                        if cr.contact_email:
+                            cr.submitter_email = cr.contact_email
+                            cr.save()
+
+                        vince_retrieve_submission(cr, data["vrf_id"], data.get("s3_file_name"))
+                    else:
+                        logger.debug(cr.errors)
+                        return HttpResponse(status=404)
+        case _:
+            return HttpResponse(f"Request: {request}")
+
+    return JsonResponse({"response": "success"}, status=200)
 
 def find_cryptos(ckeys, f, srmail):
 
@@ -431,11 +425,8 @@ def find_cryptos(ckeys, f, srmail):
 
 # This writes all active contact information into a strangely-formatted
 # text file that only the authors truly understand
-def write_srmail(request):
+def write_srmail():
     logger.debug(f"WRITING SRMAIL")
-    logger.debug(f"Request method is: {request.method}")
-    if request.method != 'POST':
-        return render(request, 'vincepub/404.html', {}, status=404)
 
     tmp = tempfile.NamedTemporaryFile()
 
